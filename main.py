@@ -8,6 +8,8 @@ from database import Database
 #from db_tab import DBTab
 from results_tab import ResultsTab
 
+
+
 class HybridTrainer:
     def __init__(self):
         self.window = tk.Tk()
@@ -16,6 +18,10 @@ class HybridTrainer:
 
         # Инициализируем БД
         self.db = Database()
+
+        # ⭐⭐ ДОБАВЛЯЕМ ОБЩИЙ ML_CORE ДЛЯ ВСЕХ ВКЛАДОК ⭐⭐
+        from ml_core import HybridMLCore
+        self.ml_core = HybridMLCore()
 
         self.setup_tabs()
 
@@ -32,9 +38,9 @@ class HybridTrainer:
         about_frame = tk.ttk.Frame(notebook)
 
         #Инициируем логику вкладок
-        self.digit_tab = DigitTab(digit_frame, self.db)
-        self.verify_tab = VerifyTab(verify_frame)
-        self.config_tab = ConfigTab(config_frame, self.db)
+        self.digit_tab = DigitTab(digit_frame, self.db, self.ml_core)
+        self.verify_tab = VerifyTab(verify_frame, self.db, self.ml_core)
+        self.config_tab = ConfigTab(config_frame, self.db, self.ml_core)
         #self.db_tab = DBTab(db_frame, self.db)
         self.results_tab = ResultsTab(results_frame, self.db)
         self.about_tab = AboutTab(about_frame)

@@ -96,7 +96,7 @@ class AboutTab:
         
         # Декоративный элемент внизу
         footer = tk.Label(main_container,
-                         text="Магистерская диссертация • 2024",
+                         text="Магистерская диссертация • 2025",
                          font=("Arial", 8),
                          fg="#888888")
         footer.pack(side=tk.BOTTOM, pady=5)

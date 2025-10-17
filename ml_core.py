@@ -116,7 +116,7 @@ class HybridMLCore:
         features = self.feature_extractor.predict(images, verbose=0)
         return features
     
-    def perform_clustering(self, features, clustering_config):
+    def perform_clustering(self, features, clustering_config, true_labels=None):
         """Выполняет кластеризацию признаков с настройками из интерфейса"""
         try:
             algorithm = clustering_config['algorithm']
@@ -155,19 +155,18 @@ class HybridMLCore:
             # Выполняем кластеризацию
             cluster_labels = self.clusterer.fit_predict(features)
             
-            # Создаем структуру кластеров
-            self._initialize_clusters(features, cluster_labels, clustering_config)
-            
+            # ⭐⭐ ПЕРЕДАЕМ REAL LABELS ДЛЯ УМНОЙ ИНИЦИАЛИЗАЦИИ ⭐⭐
+            self._initialize_clusters(features, cluster_labels, clustering_config, true_labels)
             print(f"✅ Кластеризация завершена! Создано {len(self.clusters)} кластеров")
             return cluster_labels
-            
+        
         except Exception as e:
             print(f"❌ Ошибка кластеризации: {e}")
             # Создаем fallback кластеры
-            self._create_fallback_clusters(features, clustering_config)
+            self._create_fallback_clusters(features, clustering_config, true_labels)
             return np.zeros(len(features))  # Все в одном кластере
     
-    def _initialize_clusters(self, features, cluster_labels, params):
+    def _initialize_clusters(self, features, cluster_labels, params, true_labels=None):
         """Инициализирует кластеры с начальными весами"""
         self.clusters = []
         unique_clusters = np.unique(cluster_labels)
@@ -175,7 +174,7 @@ class HybridMLCore:
         # Обработка случая когда нет кластеров (DBSCAN)
         if len(unique_clusters) == 1 and unique_clusters[0] == -1:
             print("⚠️  DBSCAN не нашел кластеров. Создаем общий кластер.")
-            self._create_fallback_clusters(features, params)
+            self._create_fallback_clusters(features, params, true_labels)
             return
         
         # Убираем шумовые точки (-1)
@@ -196,8 +195,37 @@ class HybridMLCore:
                 
             centroid = np.mean(cluster_points, axis=0)
             
-            # Начальные веса (равномерное распределение)
-            weights = {digit: 1.0/10 for digit in range(10)}
+            # ⭐⭐ УМНАЯ ИНИЦИАЛИЗАЦИЯ ВЕСОВ НА ОСНОВЕ РЕАЛЬНЫХ МЕТОК ⭐⭐
+            weights = {}
+            if true_labels is not None and len(true_labels) == len(cluster_labels):
+                cluster_true_labels = true_labels[cluster_mask]
+
+                # Считаем распределение цифр в этом кластере
+                label_counts = {}
+                total_points = len(cluster_true_labels)
+
+                for digit in range(10):
+                    count = np.sum(cluster_true_labels == digit)
+                    probability = count / total_points if total_points > 0 else 0.1
+
+                    # Добавляем небольшой smoothing чтобы избежать нулевых вероятностей
+                    smoothed_probability = 0.05 + 0.9 * probability
+                    weights[digit] = smoothed_probability
+
+                # Нормализуем веса чтобы сумма была = 1
+                total_weight = sum(weights.values())
+                for digit in weights:
+                    weights[digit] /= total_weight
+                
+                # Логируем топ-3 цифры в кластере
+                top_digits = sorted(weights.items(), key=lambda x: x[1], reverse=True)[:3]
+                top_str = ", ".join([f"{digit}({prob:.2f})" for digit, prob in top_digits])
+                print(f"   Кластер {cluster_id}: {len(cluster_points)} примеров, топ: [{top_str}]")
+                      
+            else:
+                # Fallback: равномерное распределение (старая логика)
+                weights = {digit: 1.0/10 for digit in range(10)}
+                print(f"   Кластер {cluster_id}: {len(cluster_points)} примеров (равные веса)")
             
             cluster_data = {
                 'cluster_id': int(cluster_id),
@@ -205,12 +233,10 @@ class HybridMLCore:
                 'weights': weights,
                 'params': params,
                 'size': len(cluster_points)
-            }
-            
+                }
             self.clusters.append(cluster_data)
-            print(f"   Кластер {cluster_id}: {len(cluster_points)} примеров")
     
-    def _create_fallback_clusters(self, features, params):
+    def _create_fallback_clusters(self, features, params, true_labels=None):
         """Создает резервные кластеры когда алгоритм не нашел кластеры"""
         print("🔄 Создаем резервные кластеры...")
         
@@ -221,7 +247,7 @@ class HybridMLCore:
         cluster_labels = kmeans.fit_predict(features)
         
         self.clusterer = kmeans
-        self._initialize_clusters(features, cluster_labels, params)
+        self._initialize_clusters(features, cluster_labels, params, true_labels)
     
     def find_nearest_cluster(self, features):
         """Находит ближайший кластер для данных признаков"""
@@ -250,6 +276,13 @@ class HybridMLCore:
     def predict(self, image):
         """Предсказывает цифру для одного изображения"""
         try:
+            if not self.is_trained or not self.clusters:
+                # Fallback: случайная цифра вместо всегда 0
+                import random
+                random_digit = random.randint(0, 9)
+                print(f"⚠️  Fallback предсказание: {random_digit} (модель не готова)")
+                return random_digit, 0.1, -1, None  # ← cluster_id = -1 для fallback
+            
             # Извлекаем признаки
             features = self.extract_features(np.array([image]))
             features = features[0]  # Берем первый (и единственный) пример
@@ -258,10 +291,17 @@ class HybridMLCore:
             cluster_id, distance = self.find_nearest_cluster(features)
             cluster = self.get_cluster_by_id(cluster_id)
             
-            # Выбираем цифру с наибольшим весом в кластере
-            predicted_digit = max(cluster['weights'].items(), key=lambda x: x[1])[0]
-            confidence = cluster['weights'][predicted_digit]
+            # ⭐⭐ УЛУЧШЕННЫЙ ВЫБОР ЦИФРЫ ПРИ ОДИНАКОВЫХ ВЕСАХ ⭐⭐
+            max_weight = max(cluster['weights'].values())
+            candidates = [digit for digit, weight in cluster['weights'].items() if weight == max_weight]
+
+            # Если несколько цифр с одинаковым максимальным весом - выбираем случайную
+            if len(candidates) > 1:
+                predicted_digit = np.random.choice(candidates)
+            else:
+                predicted_digit = candidates[0]
             
+            confidence = cluster['weights'][predicted_digit]
             return predicted_digit, confidence, cluster_id, features
             
         except Exception as e:

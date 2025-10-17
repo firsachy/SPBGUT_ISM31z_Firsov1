@@ -12,6 +12,9 @@ class Database:
         # Подключаемся к БД
         self.conn = sqlite3.connect('data/feedback.db')
         self.create_tables()
+        self.check_statistics_table()
+
+        self.add_true_label_column()
         print("✅ База данных инициализирована")
     
     def create_tables(self):
@@ -72,11 +75,27 @@ class Database:
                 predicted_label INTEGER,                -- Что система предположила
                 user_feedback TEXT,                     -- 'yes', 'no', 'unsure'
                 verified_label INTEGER,                 -- Истинная метка (после верификации)
+                true_label INTEGER,                     -- ⭐⭐ НАСТОЯЩАЯ МЕТКА ИЗ MNIST
                 is_used BOOLEAN DEFAULT FALSE,          -- Показывалось ли уже пользователю
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (cluster_id) REFERENCES clusters(cluster_id)
             )
         ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS statistics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            total_samples INTEGER DEFAULT 0,
+            correct_predictions INTEGER DEFAULT 0,
+            accuracy REAL DEFAULT 0,
+            active_clusters INTEGER DEFAULT 0,
+            feedback_yes INTEGER DEFAULT 0,
+            feedback_no INTEGER DEFAULT 0,
+            feedback_unsure INTEGER DEFAULT 0,
+            feedback_verified INTEGER DEFAULT 0
+    )
+''')
         
         self.conn.commit()
         print("✅ Таблицы созданы")
@@ -196,18 +215,18 @@ class Database:
 
     # ===== МЕТОДЫ ДЛЯ ПРИМЕРОВ =====
     
-    def save_sample(self, image_data, features, cluster_id, predicted_label, user_feedback, verified_label=None):
+    def save_sample(self, image_data, features, cluster_id, predicted_label, user_feedback, verified_label=None, true_label=None):
         """Сохранить пример с фидбеком"""
         cursor = self.conn.cursor()
         
         image_blob = pickle.dumps(image_data)
-        features_blob = pickle.dumps(features)
+        features_blob = pickle.dumps(features) if features is not None else None
         
         cursor.execute('''
             INSERT INTO samples 
-            (image_data, features, cluster_id, predicted_label, user_feedback, verified_label, is_used)
-            VALUES (?, ?, ?, ?, ?, ?, TRUE)
-        ''', (image_blob, features_blob, cluster_id, predicted_label, user_feedback, verified_label))
+            (image_data, features, cluster_id, predicted_label, user_feedback, verified_label, true_label, is_used)
+            VALUES (?, ?, ?, ?, ?, ?, ?, TRUE)
+        ''', (image_blob, features_blob, cluster_id, predicted_label, user_feedback, verified_label, true_label))
         
         self.conn.commit()
         return cursor.lastrowid
@@ -271,3 +290,95 @@ class Database:
         self.close_connection()
         self.conn = sqlite3.connect('data/feedback.db')
         print("🔌 Соединение с БД восстановлено")
+
+    def add_true_label_column(self):
+    #"""Добавляет колонку true_label если её нет"""
+        try:
+            cursor = self.conn.cursor()
+        
+            # Проверяем существует ли колонка true_label
+            cursor.execute("PRAGMA table_info(samples)")
+            columns = [column[1] for column in cursor.fetchall()]
+        
+            if 'true_label' not in columns:
+                print("🔧 Добавляем колонку true_label в таблицу samples...")
+                cursor.execute('''
+                    ALTER TABLE samples 
+                    ADD COLUMN true_label INTEGER
+                ''')
+                self.conn.commit()
+                print("✅ Колонка true_label добавлена")
+            else:
+                print("✅ Колонка true_label уже существует")
+            
+        except Exception as e:
+            print(f"❌ Ошибка добавления колонки true_label: {e}")
+
+    def save_statistics_snapshot(self):
+        """Сохраняет снимок текущей статистики"""
+        cursor = self.conn.cursor()
+    
+        # Собираем текущие данные
+        cursor.execute("SELECT COUNT(*) FROM samples")
+        total_samples = cursor.fetchone()[0]
+    
+        cursor.execute("SELECT COUNT(*) FROM samples WHERE user_feedback = 'yes'")
+        correct_predictions = cursor.fetchone()[0]
+    
+        cursor.execute("SELECT COUNT(*) FROM clusters")
+        active_clusters = cursor.fetchone()[0]
+    
+        # Статистика по фидбекам
+        cursor.execute("SELECT COUNT(*) FROM samples WHERE user_feedback = 'yes'")
+        feedback_yes = cursor.fetchone()[0]
+    
+        cursor.execute("SELECT COUNT(*) FROM samples WHERE user_feedback = 'no'")
+        feedback_no = cursor.fetchone()[0]
+    
+        cursor.execute("SELECT COUNT(*) FROM samples WHERE user_feedback = 'unsure'")
+        feedback_unsure = cursor.fetchone()[0]
+    
+        cursor.execute("SELECT COUNT(*) FROM samples WHERE user_feedback = 'verified'")
+        feedback_verified = cursor.fetchone()[0]
+    
+        accuracy = correct_predictions / total_samples if total_samples > 0 else 0
+    
+        # Сохраняем снимок
+        cursor.execute('''
+            INSERT INTO statistics 
+            (total_samples, correct_predictions, accuracy, active_clusters,
+            feedback_yes, feedback_no, feedback_unsure, feedback_verified)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (total_samples, correct_predictions, accuracy, active_clusters,
+              feedback_yes, feedback_no, feedback_unsure, feedback_verified))
+    
+        self.conn.commit()
+
+    def get_latest_statistics(self):
+        """Возвращает последнюю статистику"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT * FROM statistics 
+            ORDER BY timestamp DESC 
+            LIMIT 1
+        ''')
+        return cursor.fetchone()
+
+    def get_statistics_history(self, hours=24):
+        """Возвращает историю статистики за указанные часы"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT * FROM statistics 
+            WHERE timestamp >= datetime('now', ?)
+            ORDER BY timestamp
+        ''', (f'-{hours} hours',))
+        return cursor.fetchall()
+    
+    def check_statistics_table(self):
+        """Проверяет структуру таблицы statistics"""
+        cursor = self.conn.cursor()
+        cursor.execute("PRAGMA table_info(statistics)")
+        columns = cursor.fetchall()
+        print("🔍 Структура таблицы statistics:")
+        for col in columns:
+            print(f"   {col}")

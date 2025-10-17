@@ -2,10 +2,12 @@ import tkinter as tk
 from tkinter import ttk
 import numpy as np
 
+
 class ConfigTab:
-    def __init__(self, parent_frame, database):
+    def __init__(self, parent_frame, database, ml_core):
         self.frame = parent_frame
         self.db = database
+        self.ml_core = ml_core
         self.setup_ui()
     
     def setup_ui(self):
@@ -430,25 +432,71 @@ class ConfigTab:
         }
     
     def train_feature_extractor_and_cluster(self, training_data, feature_config, clustering_config):
-        """ЗАГЛУШКА: Здесь будет реальное обучение экстрактора и кластеризация"""
-        print("🔶 Заглушка: обучение экстрактора и кластеризация")
+        """РЕАЛЬНОЕ обучение экстрактора и кластеризация"""
+        try:
+            print("🚀 Запуск обучения системы...")
+
+            # 1. Создаем и обучаем экстрактор
+            self.ml_core.create_feature_extractor(
+            feature_config['architecture'],
+            feature_config['embedding_size']
+            )
+
+            # 2. Обучаем экстрактор
+            history = self.ml_core.train_feature_extractor(training_data, epochs=5)
+
+            # 3. Извлекаем признаки
+            features = self.ml_core.extract_features(training_data['x_train'])
+
+            # 4. Выполняем кластеризацию c передачей настоящих меток
+            cluster_labels = self.ml_core.perform_clustering(
+                features, 
+                clustering_config,
+                true_labels=training_data['y_train']  # ← ПЕРЕДАЕМ РЕАЛЬНЫЕ МЕТКИ!
+                )
+            
+
+            # 5. Возвращаем данные для сохранения в БД
+            clusters_data = self.ml_core.get_clusters_data_for_db()
+            self.db.save_clusters(clusters_data)
+
+            # 6. Сохраняем сам ml_core для использования в DigitTab
+            self.ml_core.save_models()
+
+            print("=" * 50)
+            print("🎉 СИСТЕМА УСПЕШНО ОБУЧЕНА!")
+            print(f"📊 Создано кластеров: {len(clusters_data)}")
+            print(f"🔍 Размерность признаков: {feature_config['embedding_size']}")
+            if history and 'accuary' in history:
+                print(f"📈 Точность экстрактора: {history['accuracy'][-1]:.3f}")
+            print("=" * 50)
+            return clusters_data
+        except Exception as e:
+            print(f"❌ Критическая ошибка обучения: {e}")
+            import traceback
+            traceback.print_exc()
+            return self.train_feature_extractor_and_cluster_fallback(feature_config, clustering_config)
         
-        # Временные данные для демонстрации
+    def train_feature_extractor_and_cluster_fallback(self, feature_config, clustering_config):
+        """Fallback метод когда основное обучение не работает"""
+        print("🔄 Используем fallback метод...")
+
+        # Создаем простые заглушечные кластеры 
         clusters_data = []
-        for i in range(clustering_config.get('k_value', 5)):  # Используем K из настроек
+        n_clusters = clustering_config.get('k_value', 5)
+
+        for i in range(n_clusters):
             cluster = {
-                'centroid': np.random.random(feature_config['embedding_size']),
+                'cluster_id': i,
+                'centroid': [0.1 * i] * feature_config['embedding_size'],  # Простой центроид
+                'weights': {digit: 1.0/10 for digit in range(10)},
                 'params': clustering_config,
-                'weights': {digit: np.random.random() for digit in range(10)}
-            }
-            # Нормализуем веса чтобы сумма была = 1
-            total = sum(cluster['weights'].values())
-            for digit in cluster['weights']:
-                cluster['weights'][digit] /= total
+                'size': 10
+                }
             clusters_data.append(cluster)
-        
-        print(f"✅ Создано {len(clusters_data)} кластеров")
+        print(f"✅ Fallback: создано {len(clusters_data)} заглушечных кластеров")
         return clusters_data
+        
     
     def initialize_system(self):
         """Инициализировать всю систему и сохранить настройки в БД"""
